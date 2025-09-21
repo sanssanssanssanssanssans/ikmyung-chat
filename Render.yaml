@@ -1,9 +1,10 @@
 services:
   - type: web
     name: uchat-render
-    env: docker
+    env: rust
     plan: free
-    dockerfile: Dockerfile
+    buildCommand: cargo build --release
+    startCommand: ./target/release/uchat-render
     envVars:
       - key: PORT
         value: 10000

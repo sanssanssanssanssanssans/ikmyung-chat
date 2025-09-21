@@ -1,12 +1,6 @@
 FROM rust:1.77 as builder
 WORKDIR /app
-COPY Cargo.toml ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo generate-lockfile
-RUN cargo build --release
-RUN rm -rf src
-COPY src ./src
-COPY static ./static
+COPY . .
 RUN cargo build --release --bin uchat-render
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
