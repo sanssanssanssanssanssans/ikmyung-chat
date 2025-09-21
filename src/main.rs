@@ -50,7 +50,7 @@ struct AppState {
 
 const MESSAGE_RATE_LIMIT: usize = 10;
 const MESSAGE_COUNT_LIMIT: usize = 5;
-const MAX_WARNINGS: usize = 3;
+const MAX_WARNINGS: usize = 1;
 const BAN_DURATION: Duration = Duration::from_secs(300);
 
 fn gen_id() -> String {

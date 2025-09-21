@@ -1,0 +1,18 @@
+User-agent: *
+Disallow: /
+Crawl-delay: 30
+
+User-agent: ChatGPT
+Disallow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: Bard
+Disallow: /
+
+User-agent: Bingbot
+Disallow: /
