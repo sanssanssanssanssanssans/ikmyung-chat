@@ -19,7 +19,8 @@ use std::collections::HashMap;
 enum WsFrame {
     Assign { id: String, color: String },
     Msg { from: String, text: String, color: String, to: Option<String> },
-    Upload { from: String, url: String, filename: String, to: Option<String> },
+    Upload { from: String, url: String, filename: String, to: Option<String>,
+    name: String },
     System { text: String },
     Help { commands: Vec<String> },
     Whisper { from: String, to: String, text: String, color: String },
@@ -367,16 +368,25 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         let filename = field.file_name().unwrap_or("unknown").to_string();
         let data = field.bytes().await.unwrap();
         
+        let extension = PathBuf::from(&filename)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_else(|| "".to_string());
+        
+        let allowed_extensions = ["jpg", "jpeg", "png", "gif"];
+        if !allowed_extensions.contains(&extension.as_str()) {
+            return (StatusCode::BAD_REQUEST, "JPG, PNG, GIF 파일만 업로드 가능합니다.").into_response();
+        }
+        
+        if data.len() > 10 * 1024 * 1024 {
+            return (StatusCode::BAD_REQUEST, "파일 크기는 10MB를 초과할 수 없습니다.").into_response();
+        }
+        
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        
-        let extension = PathBuf::from(&filename)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "bin".to_string());
         
         let unique_filename = format!("{}_{}.{}", timestamp, rand::random::<u16>(), extension);
         
@@ -396,6 +406,7 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
             url: format!("/uploads/{}", saved_name),
             filename: original_name,
             to: None,
+            name: "시스템".to_string(),
         };
 
         if let Ok(json) = serde_json::to_string(&frame) {
