@@ -376,16 +376,19 @@ body {
   
   <div id="chat"></div>
   
-  <div class="input-area">
+   <div class="input-area">
     <div class="input-container">
       <input id="messageInput" type="text" placeholder="메시지를 입력하세요 (/help for commands)..." />
-      <input type="file" id="fileInput" multiple />
-      <label for="fileInput" class="file-button" title="파일 업로드">
-        📎
+      <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif" />
+      <label for="fileInput" class="file-button" title="이미지 업로드">
+        📷
       </label>
       <button id="sendButton">전송</button>
     </div>
+    <div class="file-restrictions">
+    </div>
   </div>
+</div>
 </div>
 
 <script src="index.js">
