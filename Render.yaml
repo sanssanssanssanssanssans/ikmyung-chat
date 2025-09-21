@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: uchat-render
+    env: docker
+    plan: free
+    dockerfile: Dockerfile
+    envVars:
+      - key: PORT
+        value: 10000
+    healthCheckPath: /
