@@ -48,8 +48,34 @@ struct AppState {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    
+    println!("🚀 Starting uchat-render server...");
+    println!("📁 Current directory: {:?}", std::env::current_dir());
+    
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10000);
+    
+    println!("🌐 Using port: {}", port);
+    
+    let static_path = std::path::Path::new("static");
+    if static_path.exists() {
+        println!("✅ Static folder exists");
+    } else {
+        println!("❌ Static folder not found!");
+        std::fs::create_dir_all("static").unwrap();
+        println!("📁 Created static folder");
+    }
 
-    fs::create_dir_all("static/uploads").await.unwrap();
+    let uploads_path = std::path::Path::new("static/uploads");
+    if uploads_path.exists() {
+        println!("✅ Uploads folder exists");
+    } else {
+        println!("❌ Uploads folder not found!");
+        std::fs::create_dir_all("static/uploads").unwrap();
+        println!("📁 Created uploads folder");
+    }
 
     let (tx, _rx) = broadcast::channel::<String>(256);
     let tx = Arc::new(tx);
