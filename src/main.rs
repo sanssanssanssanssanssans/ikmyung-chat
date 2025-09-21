@@ -7,10 +7,12 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, env, net::SocketAddr, path::PathBuf, collections::HashSet};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use futures::{StreamExt, SinkExt};
+use rand::Rng;
 use tokio::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -22,7 +24,34 @@ enum WsFrame {
     Help { commands: Vec<String> },
     Whisper { from: String, to: String, text: String, color: String },
     Blocked { from: String },
+    Warn { text: String },
+    Banned { reason: String },
 }
+
+#[derive(Clone)]
+struct UserActivity {
+    pub message_count: usize,
+    pub last_message_time: Instant,
+    pub warnings: usize,
+    pub is_banned: bool,
+    pub ban_until: Option<Instant>,
+}
+
+type ChatHistory = Arc<tokio::sync::Mutex<Vec<String>>>;
+type BlockList = Arc<tokio::sync::Mutex<HashSet<String>>>;
+type UserActivities = Arc<RwLock<HashMap<String, UserActivity>>>;
+
+#[derive(Clone)]
+struct AppState {
+    tx: Arc<broadcast::Sender<String>>,
+    history: ChatHistory,
+    user_activities: UserActivities,
+}
+
+const MESSAGE_RATE_LIMIT: usize = 10;
+const MESSAGE_COUNT_LIMIT: usize = 5;
+const MAX_WARNINGS: usize = 3;
+const BAN_DURATION: Duration = Duration::from_secs(300);
 
 fn gen_id() -> String {
     let n: u16 = rand::random();
@@ -36,51 +65,22 @@ fn gen_color() -> String {
     format!("#{:02x}{:02x}{:02x}", r, g, b)
 }
 
-type ChatHistory = Arc<tokio::sync::Mutex<Vec<String>>>;
-type BlockList = Arc<tokio::sync::Mutex<HashSet<String>>>;
-
-#[derive(Clone)]
-struct AppState {
-    tx: Arc<broadcast::Sender<String>>,
-    history: ChatHistory,
-}
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    
-    println!("🚀 Starting uchat-render server...");
-    println!("📁 Current directory: {:?}", std::env::current_dir());
-    
-    let port = std::env::var("PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10000);
-    
-    println!("🌐 Using port: {}", port);
-    
-    let static_path = std::path::Path::new("static");
-    if static_path.exists() {
-        println!("✅ Static folder exists");
-    } else {
-        println!("❌ Static folder not found!");
-        std::fs::create_dir_all("static").unwrap();
-        println!("📁 Created static folder");
-    }
 
-    let uploads_path = std::path::Path::new("static/uploads");
-    if uploads_path.exists() {
-        println!("✅ Uploads folder exists");
-    } else {
-        println!("❌ Uploads folder not found!");
-        std::fs::create_dir_all("static/uploads").unwrap();
-        println!("📁 Created uploads folder");
-    }
+    fs::create_dir_all("static/uploads").await.unwrap();
 
     let (tx, _rx) = broadcast::channel::<String>(256);
     let tx = Arc::new(tx);
     let history: ChatHistory = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let state = AppState { tx: tx.clone(), history: history.clone() };
+    let user_activities: UserActivities = Arc::new(RwLock::new(HashMap::new()));
+    
+    let state = AppState { 
+        tx: tx.clone(), 
+        history: history.clone(),
+        user_activities: user_activities.clone(),
+    };
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -146,6 +146,55 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+async fn check_spam(user_id: &str, state: &AppState) -> Result<(), String> {
+    let mut activities = state.user_activities.write().await;
+    
+    let now = Instant::now();
+    let activity = activities.entry(user_id.to_string()).or_insert(UserActivity {
+        message_count: 0,
+        last_message_time: now,
+        warnings: 0,
+        is_banned: false,
+        ban_until: None,
+    });
+
+    if activity.is_banned {
+        if let Some(ban_until) = activity.ban_until {
+            if now < ban_until {
+                let remaining = ban_until.duration_since(now).as_secs();
+                return Err(format!("차단 상태입니다. {}초 후에 다시 시도해주세요.", remaining));
+            } else {
+                activity.is_banned = false;
+                activity.ban_until = None;
+                activity.message_count = 0;
+                activity.warnings = 0;
+            }
+        }
+    }
+
+    if now.duration_since(activity.last_message_time) < Duration::from_secs(1) {
+        activity.message_count += 1;
+    } else {
+        activity.message_count = 1;
+    }
+
+    activity.last_message_time = now;
+
+    if activity.message_count > MESSAGE_COUNT_LIMIT {
+        activity.warnings += 1;
+        
+        if activity.warnings >= MAX_WARNINGS {
+            activity.is_banned = true;
+            activity.ban_until = Some(now + BAN_DURATION);
+            return Err("도배로 인해 5분간 차단되었습니다.".to_string());
+        }
+        
+        return Err(format!("너무 빠르게 메시지를 보내고 있습니다. 경고: {}/{}", activity.warnings, MAX_WARNINGS));
+    }
+
+    Ok(())
+}
+
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let id = gen_id();
     let color = gen_color();
@@ -169,8 +218,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let id_clone = id.clone();
     let color_clone = color.clone();
     let block_list_clone = block_list.clone();
+    let state_clone = state.clone();
 
-    // sender를 Arc<Mutex>로 감싸서 공유 가능하게 만듦
     let sender_arc = Arc::new(Mutex::new(sender));
     let sender_for_send_task = sender_arc.clone();
 
@@ -195,6 +244,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     while let Some(Ok(message)) = receiver.next().await {
         match message {
             Message::Text(text) => {
+                if let Err(warning) = check_spam(&id_clone, &state_clone).await {
+                    let frame = WsFrame::Warn { text: warning };
+                    if let Ok(json) = serde_json::to_string(&frame) {
+                        let mut sender = sender_arc.lock().await;
+                        let _ = sender.send(Message::Text(json)).await;
+                    }
+                    continue;
+                }
+
                 if text.trim() == "/help" {
                     let commands = vec![
                         "/help - 도움말 보기".to_string(),
@@ -202,6 +260,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         "/block [대상] - 사용자 차단".to_string(),
                         "/unblock [대상] - 사용자 차단 해제".to_string(),
                         "/upload - 파일 업로드".to_string(),
+                        "주의: 도배 시 자동 차단됩니다".to_string(),
                     ];
                     let frame = WsFrame::Help { commands };
                     if let Ok(json) = serde_json::to_string(&frame) {
